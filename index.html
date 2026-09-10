@@ -66,6 +66,16 @@
       color: #555;
       text-align: center;
     }
+    #error-banner {
+      background: #f8d7da;
+      color: #721c24;
+      padding: 14px 18px;
+      border-radius: 6px;
+      margin-top: 16px;
+      font-size: 0.95rem;
+      line-height: 1.5;
+      text-align: left;
+    }
     /* Loading UI */
     .loading-container {
       text-align: center;
@@ -101,10 +111,10 @@
     <h3>Student Details</h3>
     <label for="studentId">Student ID:</label>
     <input type="text" id="studentId" placeholder="e.g. ST-1004" required>
-    
+
     <label for="studentName">Student Name:</label>
     <input type="text" id="studentName" placeholder="e.g. John Doe" required>
-    
+
     <button id="start-btn">Start Test</button>
   </div>
 
@@ -124,6 +134,7 @@
       <div class="progress-bar-container">
         <div class="progress-bar-fill"></div>
       </div>
+      <div id="error-banner" class="hidden"></div>
     </div>
   </div>
 
@@ -141,27 +152,30 @@
     let currentTaskIndex = 0;
     let studentId = "";
     let studentName = "";
-    
+
     let mediaStream = null;
     let mediaRecorder = null;
     let audioChunks = [];
-    
+
     let recognition = null;
     let currentLiveTranscript = "";
-    
+
     let completedTasks = [];
     let pendingUploadPromises = [];
     let currentInterval = null;
+    let uploadErrors = [];
+
     // Helper: Pick a random item from an array
     function getRandomItem(arr) {
       if (!arr || arr.length === 0) return null;
       return arr[Math.floor(Math.random() * arr.length)];
     }
+
     // Initialize Native Browser Speech Recognition
     function setupRecognition() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) return null;
-      
+
       const r = new SpeechRecognition();
       r.continuous = true;
       r.interimResults = true;
@@ -178,6 +192,7 @@
       };
       return r;
     }
+
     document.getElementById('start-btn').addEventListener('click', async () => {
       const startBtn = document.getElementById('start-btn');
       studentId = document.getElementById('studentId').value.trim();
@@ -206,6 +221,7 @@
           throw new Error("Empty bank");
         }
       } catch (e) {
+        console.warn("Falling back to built-in item bank:", e);
         rawBank = [
           { id: 1, type: "read_aloud", content: "Technology has revolutionized the way we communicate across borders, enabling instantaneous connections around the globe." },
           { id: 2, type: "read_aloud", content: "Education empowers individuals to expand their horizons and build sustainable futures." },
@@ -225,12 +241,14 @@
       document.getElementById('step-task').classList.remove('hidden');
       runTask();
     });
+
     function clearActiveTimer() {
       if (currentInterval !== null) {
         clearInterval(currentInterval);
         currentInterval = null;
       }
     }
+
     function runTask() {
       clearActiveTimer();
       if (currentTaskIndex >= itemBank.length) {
@@ -265,6 +283,7 @@
         }
       }, 1000);
     }
+
     function startRecordingPhase(item, recordDuration) {
       clearActiveTimer();
       const statusEl = document.getElementById('status-indicator');
@@ -288,9 +307,10 @@
         }
       }, 1000);
     }
+
     function stopTask(item) {
       clearActiveTimer();
-      
+
       if (recognition) {
         try { recognition.stop(); } catch(e) {}
       }
@@ -305,6 +325,7 @@
         reader.readAsDataURL(audioBlob);
         reader.onloadend = () => {
           const base64Audio = reader.result;
+
           const uploadPromise = fetch(APPS_SCRIPT_URL, {
             method: 'POST',
             body: JSON.stringify({
@@ -317,6 +338,9 @@
           })
           .then(res => res.json())
           .then(fileData => {
+            if (fileData.status === "error") {
+              throw new Error(fileData.message || "Unknown error saving recording");
+            }
             completedTasks.push({
               taskType: item.type,
               promptContent: item.content,
@@ -324,37 +348,78 @@
               audioUrl: fileData.downloadUrl || fileData.viewUrl,
               transcript: capturedTranscript
             });
+          })
+          .catch(err => {
+            console.error(`Upload failed for ${fileName}:`, err);
+            uploadErrors.push(`${fileName}: ${err.message || err}`);
+            // Still record the task locally so the transcript isn't lost,
+            // even though the audio upload failed.
+            completedTasks.push({
+              taskType: item.type,
+              promptContent: item.content,
+              fileName: fileName,
+              audioUrl: "UPLOAD_FAILED",
+              transcript: capturedTranscript
+            });
           });
+
           pendingUploadPromises.push(uploadPromise);
           currentTaskIndex++;
           runTask();
         };
       };
     }
+
     async function finalizeAssessment() {
       clearActiveTimer();
-      
+
       document.getElementById('step-task').classList.add('hidden');
       document.getElementById('step-loading').classList.remove('hidden');
-      await Promise.all(pendingUploadPromises);
+
+      // Wait for all uploads to settle (success or failure) — never let a
+      // rejected promise here freeze the app on the loading screen.
+      await Promise.allSettled(pendingUploadPromises);
+
       const payload = {
         studentId: studentId,
         studentName: studentName,
         tasks: completedTasks
       };
+
+      let submitFailed = false;
       try {
-        await fetch(APPS_SCRIPT_URL, {
+        const res = await fetch(APPS_SCRIPT_URL, {
           method: 'POST',
           body: JSON.stringify({
             action: 'submitFullTest',
             payload: payload
           })
         });
+        const result = await res.json();
+        if (result.status === "error") {
+          throw new Error(result.message || "Unknown error submitting test");
+        }
       } catch (err) {
         console.error("Submission error:", err);
+        submitFailed = true;
+        uploadErrors.push(`Final submission: ${err.message || err}`);
       }
+
       document.getElementById('step-loading').classList.add('hidden');
-      document.getElementById('step-complete').classList.remove('hidden');
+
+      if (uploadErrors.length > 0) {
+        // Show completion screen but surface a warning banner instead of
+        // hanging silently — the student/teacher can see something needs attention.
+        const banner = document.getElementById('error-banner');
+        banner.textContent = "Note: some items had trouble saving (" + uploadErrors.join("; ") + "). Please inform your administrator.";
+        banner.classList.remove('hidden');
+        document.getElementById('step-loading').classList.remove('hidden');
+        document.getElementById('loading-subtext').textContent = submitFailed
+          ? "There was a problem submitting your results."
+          : "Your recordings were saved with some warnings.";
+      } else {
+        document.getElementById('step-complete').classList.remove('hidden');
+      }
     }
   </script>
 </body>
