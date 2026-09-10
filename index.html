@@ -171,6 +171,29 @@
       return arr[Math.floor(Math.random() * arr.length)];
     }
 
+    // Helper: fetch with a timeout and a few retries, so a transient
+    // network blip doesn't get reported as a hard failure.
+    async function fetchWithRetry(url, options, { retries = 3, timeoutMs = 20000, label = "request" } = {}) {
+      let lastErr;
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const res = await fetch(url, { ...options, signal: controller.signal });
+          clearTimeout(timeoutId);
+          return res;
+        } catch (err) {
+          clearTimeout(timeoutId);
+          lastErr = err;
+          console.warn(`${label} attempt ${attempt}/${retries} failed:`, err);
+          if (attempt < retries) {
+            await new Promise(r => setTimeout(r, attempt * 1000)); // backoff: 1s, 2s...
+          }
+        }
+      }
+      throw lastErr;
+    }
+
     // Initialize Native Browser Speech Recognition
     function setupRecognition() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -326,7 +349,7 @@
         reader.onloadend = () => {
           const base64Audio = reader.result;
 
-          const uploadPromise = fetch(APPS_SCRIPT_URL, {
+          const uploadPromise = fetchWithRetry(APPS_SCRIPT_URL, {
             method: 'POST',
             body: JSON.stringify({
               action: 'saveRecording',
@@ -335,7 +358,7 @@
               fileName: fileName,
               transcript: capturedTranscript
             })
-          })
+          }, { label: `saveRecording (${fileName})` })
           .then(res => res.json())
           .then(fileData => {
             if (fileData.status === "error") {
@@ -388,13 +411,13 @@
 
       let submitFailed = false;
       try {
-        const res = await fetch(APPS_SCRIPT_URL, {
+        const res = await fetchWithRetry(APPS_SCRIPT_URL, {
           method: 'POST',
           body: JSON.stringify({
             action: 'submitFullTest',
             payload: payload
           })
-        });
+        }, { label: "submitFullTest" });
         const result = await res.json();
         if (result.status === "error") {
           throw new Error(result.message || "Unknown error submitting test");
