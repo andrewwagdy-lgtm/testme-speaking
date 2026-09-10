@@ -184,8 +184,11 @@
           return res;
         } catch (err) {
           clearTimeout(timeoutId);
-          lastErr = err;
-          console.warn(`${label} attempt ${attempt}/${retries} failed:`, err);
+          const isTimeout = err.name === 'AbortError';
+          lastErr = isTimeout
+            ? new Error(`${label} timed out after ${timeoutMs / 1000}s`)
+            : err;
+          console.warn(`${label} attempt ${attempt}/${retries} failed:`, lastErr);
           if (attempt < retries) {
             await new Promise(r => setTimeout(r, attempt * 1000)); // backoff: 1s, 2s...
           }
@@ -358,7 +361,7 @@
               fileName: fileName,
               transcript: capturedTranscript
             })
-          }, { label: `saveRecording (${fileName})` })
+          }, { label: `saveRecording (${fileName})`, timeoutMs: 60000, retries: 2 })
           .then(res => res.json())
           .then(fileData => {
             if (fileData.status === "error") {
@@ -417,7 +420,7 @@
             action: 'submitFullTest',
             payload: payload
           })
-        }, { label: "submitFullTest" });
+        }, { label: "submitFullTest", timeoutMs: 30000 });
         const result = await res.json();
         if (result.status === "error") {
           throw new Error(result.message || "Unknown error submitting test");
