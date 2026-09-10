@@ -205,6 +205,33 @@
       throw lastErr;
     }
 
+    // Helper: extract a Google Drive file ID from any common link format
+    // (share link, uc?id=, thumbnail link) or a bare file ID.
+    function extractDriveFileId(url) {
+      if (!url) return null;
+      const str = String(url).trim();
+      let match = str.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
+      if (match) return match[1];
+      match = str.match(/[?&]id=([a-zA-Z0-9_-]{20,})/);
+      if (match) return match[1];
+      if (/^[a-zA-Z0-9_-]{20,}$/.test(str)) return str;
+      return null;
+    }
+
+    // Helper: build a reliable inline-embeddable image URL for a Drive file,
+    // plus a fallback URL to try if the primary one fails to load.
+    function buildDriveImageUrls(rawUrl) {
+      const id = extractDriveFileId(rawUrl);
+      if (!id) {
+        // Not a recognizable Drive link/ID — use as-is (e.g. Unsplash URLs).
+        return { primary: rawUrl, fallback: rawUrl };
+      }
+      return {
+        primary: `https://drive.google.com/thumbnail?id=${id}&sz=w1600`,
+        fallback: `https://lh3.googleusercontent.com/d/${id}`
+      };
+    }
+
     // Initialize Native Browser Speech Recognition
     function setupRecognition() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -301,7 +328,8 @@
         prepDuration = 10;
       } else if (item.type === 'picture_desc') {
         titleEl.textContent = `Task ${currentTaskIndex + 1}: Describe the Picture`;
-        promptEl.innerHTML = `<img src="${item.content}" alt="Task Image" />`;
+        const { primary, fallback } = buildDriveImageUrls(item.content);
+        promptEl.innerHTML = `<img src="${primary}" data-fallback="${fallback}" alt="Task Image" onerror="if(!this.dataset.triedFallback){this.dataset.triedFallback='1';this.src=this.dataset.fallback;}" />`;
         prepDuration = 15;
       }
       statusEl.textContent = "⏳ Preparation Time";
