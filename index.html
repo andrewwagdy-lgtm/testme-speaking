@@ -172,8 +172,11 @@
     }
 
     // Helper: fetch with a timeout and a few retries, so a transient
-    // network blip doesn't get reported as a hard failure.
-    async function fetchWithRetry(url, options, { retries = 3, timeoutMs = 20000, label = "request" } = {}) {
+    // network blip (or an Apps Script "echo" redirect glitch) doesn't get
+    // reported as a hard failure. Retries on network errors AND on
+    // responses that fail to parse as JSON (e.g. Apps Script occasionally
+    // serves an HTML error page instead of the expected JSON).
+    async function fetchJsonWithRetry(url, options, { retries = 3, timeoutMs = 20000, label = "request" } = {}) {
       let lastErr;
       for (let attempt = 1; attempt <= retries; attempt++) {
         const controller = new AbortController();
@@ -181,7 +184,12 @@
         try {
           const res = await fetch(url, { ...options, signal: controller.signal });
           clearTimeout(timeoutId);
-          return res;
+          const text = await res.text();
+          try {
+            return JSON.parse(text);
+          } catch (parseErr) {
+            throw new Error(`Non-JSON response (status ${res.status}): ${text.slice(0, 120)}`);
+          }
         } catch (err) {
           clearTimeout(timeoutId);
           const isTimeout = err.name === 'AbortError';
@@ -239,8 +247,7 @@
       }
       let rawBank = [];
       try {
-        const res = await fetch(APPS_SCRIPT_URL + "?api=getItems");
-        const data = await res.json();
+        const data = await fetchJsonWithRetry(APPS_SCRIPT_URL + "?api=getItems", {}, { label: "getItems", timeoutMs: 20000, retries: 3 });
         if (data.status === "success" && data.items && data.items.length > 0) {
           rawBank = data.items;
         } else {
@@ -352,7 +359,7 @@
         reader.onloadend = () => {
           const base64Audio = reader.result;
 
-          const uploadPromise = fetchWithRetry(APPS_SCRIPT_URL, {
+          const uploadPromise = fetchJsonWithRetry(APPS_SCRIPT_URL, {
             method: 'POST',
             body: JSON.stringify({
               action: 'saveRecording',
@@ -361,8 +368,7 @@
               fileName: fileName,
               transcript: capturedTranscript
             })
-          }, { label: `saveRecording (${fileName})`, timeoutMs: 60000, retries: 2 })
-          .then(res => res.json())
+          }, { label: `saveRecording (${fileName})`, timeoutMs: 60000, retries: 3 })
           .then(fileData => {
             if (fileData.status === "error") {
               throw new Error(fileData.message || "Unknown error saving recording");
@@ -414,14 +420,13 @@
 
       let submitFailed = false;
       try {
-        const res = await fetchWithRetry(APPS_SCRIPT_URL, {
+        const result = await fetchJsonWithRetry(APPS_SCRIPT_URL, {
           method: 'POST',
           body: JSON.stringify({
             action: 'submitFullTest',
             payload: payload
           })
-        }, { label: "submitFullTest", timeoutMs: 30000 });
-        const result = await res.json();
+        }, { label: "submitFullTest", timeoutMs: 30000, retries: 3 });
         if (result.status === "error") {
           throw new Error(result.message || "Unknown error submitting test");
         }
