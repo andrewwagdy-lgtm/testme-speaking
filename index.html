@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Language Speaking Assessment</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 750px;
+      margin: 40px auto;
+      padding: 30px;
+      border: 1px solid #e0e0e0;
+      border-radius: 12px;
+      background-color: #ffffff;
+      color: #333333;
+    }
+    .hidden { display: none !important; }
+    .timer {
+      font-size: 2.8rem;
+      font-weight: bold;
+      color: #d9534f;
+      margin: 15px 0;
+      text-align: center;
+    }
+    .prompt-box {
+      background: #f8f9fa;
+      padding: 24px;
+      border-left: 6px solid #0275d8;
+      border-radius: 4px;
+      margin: 20px 0;
+      font-size: 1.25rem;
+      line-height: 1.6;
+      text-align: center;
+    }
+    .prompt-box img {
+      max-width: 100%;
+      height: auto;
+      max-height: 400px;
+      border-radius: 6px;
+    }
+    label { font-weight: 600; display: block; margin-top: 15px; }
+    input[type="text"] {
+      width: 100%;
+      padding: 12px;
+      margin: 8px 0 20px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+    }
+    button {
+      background: #0275d8;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      font-size: 1rem;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      width: 100%;
+    }
+    button:disabled { background: #cccccc; cursor: not-allowed; }
+    #status-indicator {
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: #555;
+      text-align: center;
+    }
+    /* Loading UI */
+    .loading-container {
+      text-align: center;
+      padding: 30px 10px;
+    }
+    .progress-bar-container {
+      width: 100%;
+      background-color: #e0e0e0;
+      border-radius: 8px;
+      overflow: hidden;
+      margin-top: 20px;
+      height: 16px;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 100%;
+      background: linear-gradient(90deg, #0275d8, #5bc0de, #0275d8);
+      background-size: 200% 100%;
+      animation: loadingAnimation 1.5s infinite linear;
+    }
+    @keyframes loadingAnimation {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Language Speaking Assessment</h2>
+
+  <!-- Step 1: User Info -->
+  <div id="step-user">
+    <h3>Student Details</h3>
+    <label for="studentId">Student ID:</label>
+    <input type="text" id="studentId" placeholder="e.g. ST-1004" required>
+    
+    <label for="studentName">Student Name:</label>
+    <input type="text" id="studentName" placeholder="e.g. John Doe" required>
+    
+    <button id="start-btn">Start Test</button>
+  </div>
+
+  <!-- Step 2: Task Execution -->
+  <div id="step-task" class="hidden">
+    <h3 id="task-title">Loading Task...</h3>
+    <div id="status-indicator">Preparation Phase</div>
+    <div class="timer" id="timer-display">10</div>
+    <div class="prompt-box" id="prompt-container"></div>
+  </div>
+
+  <!-- Step 3: Loading / Saving Indicator -->
+  <div id="step-loading" class="hidden">
+    <div class="loading-container">
+      <h3>Please wait...</h3>
+      <p id="loading-subtext">Saving recordings and submitting your responses.</p>
+      <div class="progress-bar-container">
+        <div class="progress-bar-fill"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 4: Complete -->
+  <div id="step-complete" class="hidden">
+    <div style="background-color: #d4edda; color: #155724; padding: 20px; border-radius: 6px; text-align: center;">
+      <h3>Assessment Completed</h3>
+      <p>Your responses and audio recordings have been successfully saved.</p>
+    </div>
+  </div>
+
+  <script>
+    const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxgkXOqBHI7NsJsaAr2LdAZDh6mQv391fgVpaCD66imBaQwnc1w1udHduLfMUU22UT-/exec";
+    let itemBank = [];
+    let currentTaskIndex = 0;
+    let studentId = "";
+    let studentName = "";
+    
+    let mediaStream = null;
+    let mediaRecorder = null;
+    let audioChunks = [];
+    
+    let recognition = null;
+    let currentLiveTranscript = "";
+    
+    let completedTasks = [];
+    let pendingUploadPromises = [];
+    let currentInterval = null;
+    // Helper: Pick a random item from an array
+    function getRandomItem(arr) {
+      if (!arr || arr.length === 0) return null;
+      return arr[Math.floor(Math.random() * arr.length)];
+    }
+    // Initialize Native Browser Speech Recognition
+    function setupRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) return null;
+      
+      const r = new SpeechRecognition();
+      r.continuous = true;
+      r.interimResults = true;
+      r.lang = 'en-US';
+      r.onresult = (event) => {
+        let transcript = '';
+        for (let i = 0; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript + ' ';
+        }
+        currentLiveTranscript = transcript.trim();
+      };
+      r.onerror = (e) => {
+        console.warn("Speech recognition error:", e.error);
+      };
+      return r;
+    }
+    document.getElementById('start-btn').addEventListener('click', async () => {
+      const startBtn = document.getElementById('start-btn');
+      studentId = document.getElementById('studentId').value.trim();
+      studentName = document.getElementById('studentName').value.trim();
+      if (!studentId || !studentName) {
+        alert("Please enter both Student ID and Name.");
+        return;
+      }
+      startBtn.disabled = true;
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm' });
+        mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+      } catch (err) {
+        alert("Microphone permission is required to proceed.");
+        startBtn.disabled = false;
+        return;
+      }
+      let rawBank = [];
+      try {
+        const res = await fetch(APPS_SCRIPT_URL + "?api=getItems");
+        const data = await res.json();
+        if (data.status === "success" && data.items && data.items.length > 0) {
+          rawBank = data.items;
+        } else {
+          throw new Error("Empty bank");
+        }
+      } catch (e) {
+        rawBank = [
+          { id: 1, type: "read_aloud", content: "Technology has revolutionized the way we communicate across borders, enabling instantaneous connections around the globe." },
+          { id: 2, type: "read_aloud", content: "Education empowers individuals to expand their horizons and build sustainable futures." },
+          { id: 3, type: "picture_desc", content: "https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?w=800" },
+          { id: 4, type: "picture_desc", content: "https://images.unsplash.com/photo-1522202176988-66273c2fd55f?w=800" }
+        ];
+      }
+      // Filter tasks by type and pick one random task from each pool
+      const readAloudPool = rawBank.filter(item => item.type === "read_aloud");
+      const pictureDescPool = rawBank.filter(item => item.type === "picture_desc");
+      const selectedReadAloud = getRandomItem(readAloudPool);
+      const selectedPictureDesc = getRandomItem(pictureDescPool);
+      itemBank = [];
+      if (selectedReadAloud) itemBank.push(selectedReadAloud);
+      if (selectedPictureDesc) itemBank.push(selectedPictureDesc);
+      document.getElementById('step-user').classList.add('hidden');
+      document.getElementById('step-task').classList.remove('hidden');
+      runTask();
+    });
+    function clearActiveTimer() {
+      if (currentInterval !== null) {
+        clearInterval(currentInterval);
+        currentInterval = null;
+      }
+    }
+    function runTask() {
+      clearActiveTimer();
+      if (currentTaskIndex >= itemBank.length) {
+        finalizeAssessment();
+        return;
+      }
+      const item = itemBank[currentTaskIndex];
+      const titleEl = document.getElementById('task-title');
+      const promptEl = document.getElementById('prompt-container');
+      const statusEl = document.getElementById('status-indicator');
+      const timerEl = document.getElementById('timer-display');
+      let prepDuration = 10;
+      let recordDuration = 30;
+      if (item.type === 'read_aloud') {
+        titleEl.textContent = `Task ${currentTaskIndex + 1}: Read Aloud`;
+        promptEl.innerHTML = `<p>"${item.content}"</p>`;
+        prepDuration = 10;
+      } else if (item.type === 'picture_desc') {
+        titleEl.textContent = `Task ${currentTaskIndex + 1}: Describe the Picture`;
+        promptEl.innerHTML = `<img src="${item.content}" alt="Task Image" />`;
+        prepDuration = 15;
+      }
+      statusEl.textContent = "⏳ Preparation Time";
+      let prepTime = prepDuration;
+      timerEl.textContent = prepTime;
+      currentInterval = setInterval(() => {
+        prepTime--;
+        timerEl.textContent = prepTime;
+        if (prepTime <= 0) {
+          clearActiveTimer();
+          startRecordingPhase(item, recordDuration);
+        }
+      }, 1000);
+    }
+    function startRecordingPhase(item, recordDuration) {
+      clearActiveTimer();
+      const statusEl = document.getElementById('status-indicator');
+      const timerEl = document.getElementById('timer-display');
+      audioChunks = [];
+      currentLiveTranscript = "";
+      mediaRecorder.start();
+      recognition = setupRecognition();
+      if (recognition) {
+        try { recognition.start(); } catch(e) {}
+      }
+      statusEl.textContent = "🔴 Recording... Speak Now!";
+      let recordTime = recordDuration;
+      timerEl.textContent = recordTime;
+      currentInterval = setInterval(() => {
+        recordTime--;
+        timerEl.textContent = recordTime;
+        if (recordTime <= 0) {
+          clearActiveTimer();
+          stopTask(item);
+        }
+      }, 1000);
+    }
+    function stopTask(item) {
+      clearActiveTimer();
+      
+      if (recognition) {
+        try { recognition.stop(); } catch(e) {}
+      }
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        const capturedTranscript = currentLiveTranscript || "[No speech detected]";
+        const fileName = `${studentId}_Task${currentTaskIndex + 1}.webm`;
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = () => {
+          const base64Audio = reader.result;
+          const uploadPromise = fetch(APPS_SCRIPT_URL, {
+            method: 'POST',
+            body: JSON.stringify({
+              action: 'saveRecording',
+              base64Audio: base64Audio,
+              mimeType: 'audio/webm',
+              fileName: fileName,
+              transcript: capturedTranscript
+            })
+          })
+          .then(res => res.json())
+          .then(fileData => {
+            completedTasks.push({
+              taskType: item.type,
+              promptContent: item.content,
+              fileName: fileData.fileName || fileName,
+              audioUrl: fileData.downloadUrl || fileData.viewUrl,
+              transcript: capturedTranscript
+            });
+          });
+          pendingUploadPromises.push(uploadPromise);
+          currentTaskIndex++;
+          runTask();
+        };
+      };
+    }
+    async function finalizeAssessment() {
+      clearActiveTimer();
+      
+      document.getElementById('step-task').classList.add('hidden');
+      document.getElementById('step-loading').classList.remove('hidden');
+      await Promise.all(pendingUploadPromises);
+      const payload = {
+        studentId: studentId,
+        studentName: studentName,
+        tasks: completedTasks
+      };
+      try {
+        await fetch(APPS_SCRIPT_URL, {
+          method: 'POST',
+          body: JSON.stringify({
+            action: 'submitFullTest',
+            payload: payload
+          })
+        });
+      } catch (err) {
+        console.error("Submission error:", err);
+      }
+      document.getElementById('step-loading').classList.add('hidden');
+      document.getElementById('step-complete').classList.remove('hidden');
+    }
+  </script>
+</body>
+</html>
